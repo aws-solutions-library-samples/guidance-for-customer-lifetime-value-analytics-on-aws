@@ -1,0 +1,1017 @@
+# https://devops.learnquicksight.online/quicksight-via-cloudformation.html
+AWSTemplateFormatVersion: 2010-09-09
+Description: Cloudformation Template for AWS for Data Symposium
+# Running the following command will configure Quicksight into your account: 
+# aws quicksight create-account-subscription --edition ENTERPRISE --authentication-method IAM_AND_QUICKSIGHT --aws-account-id XXXXXXXXXXXX --account-name quicksight-enterprise-reporting --notification-email XXXXXXXXXX --region us-east-1
+
+####################################################################################################################################
+####################################################################################################################################
+##############################################################Parameters############################################################
+####################################################################################################################################
+####################################################################################################################################
+Parameters:
+
+  Suffix:
+    Type: String
+    Description: OPTIONAL - If you need to create multiple instances of this sample on same aws account, add a short NUMERIC suffix here.
+
+  SnapshotIdentifierSQLserver:
+    Description: The identifier of the snapshot to create the cluster from
+    Type: String
+
+
+  ClientPublicIPaddress:
+    Description: A single IPv4 address or range of IPv4 addresses with access to Bastion host on public subnet 
+    Type: String
+    Default: 54.239.6.184/32
+
+  WinKeyName:
+    Description: Name of an existing EC2 KeyPair to enable RDP access to the instance
+    Type: AWS::EC2::KeyPair::KeyName
+    ConstraintDescription: must be the name of an existing EC2 KeyPair.
+
+  LatestAmiId:
+    Type: String 
+    Default: 'ami-075baa8c8780ef2cd'  
+
+
+  IAMRoleDmsVpcExist:
+    Description: Does your AWS account already have dms-vpc-role(goto IAM>roles & search for "dms-vpc" to check) if this role is not there template will fail-rollback unless you change default Y to N?
+    Type: String
+    Default: Y
+    AllowedValues:
+      - Y
+      - N
+
+Conditions:
+  RestoreFromSnapshot:
+    Fn::Not:
+      - Fn::Equals:
+        - Ref: SnapshotIdentifierSQLserver
+        - ''
+  IAMRoleDmsVpcExist: !Equals [!Ref IAMRoleDmsVpcExist, 'N']
+
+Resources:
+
+####################################################################################################################################
+####################################################################################################################################
+##############################################################Amazon S3#############################################################
+####################################################################################################################################
+####################################################################################################################################
+  S3BucketForRawData:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      AccessControl: BucketOwnerFullControl
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketName: !Sub "rawdata-${AWS::AccountId}-awsfordata${Suffix}"
+
+  S3BucketForAgentsData:
+    Type: 'AWS::S3::Bucket'
+    DeletionPolicy: Delete
+    Properties:
+      BucketName: !Sub "agentsdata-${AWS::AccountId}-awsfordata${Suffix}"
+
+  S3BucketForCustomerProfile:
+    Type: 'AWS::S3::Bucket'
+    DeletionPolicy: Delete
+    Properties:
+      BucketName: !Sub "customerprofile-${AWS::AccountId}-awsfordata${Suffix}"
+
+
+
+####################################################################################################################################
+####################################################################################################################################
+##############################################################AWS Glue#############################################################
+####################################################################################################################################
+####################################################################################################################################
+
+
+# Create an AWS Glue database
+  AwsForDataDatabase:
+    Type: AWS::Glue::Database
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseInput:
+        # Name: !Ref DatabaseName
+        Description: This database is created by Cloudformation Stack
+
+  MyGlueCrawlerRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - glue.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "s3:GetObject"
+                  - "s3:PutObject"
+                Resource:
+                  - !Sub "arn:aws:s3:::${S3BucketForAgentsData}/*"
+                  - !Sub "arn:aws:s3:::${S3BucketForCustomerProfile}/*"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole
+      Path: "/"
+
+  AgentsDataLogCrawler:
+    Type: AWS::Glue::Crawler
+    Properties:
+      Role: !GetAtt MyGlueCrawlerRole.Arn
+      DatabaseName: !Ref AwsForDataDatabase #Using the same Database
+      Targets:
+        S3Targets:
+          - Path: !Sub s3://${S3BucketForAgentsData}/AnalyticsData/
+      TablePrefix: awsfordata-
+      SchemaChangePolicy:
+        UpdateBehavior: "UPDATE_IN_DATABASE"
+        DeleteBehavior: "LOG"
+      Configuration: "{\"Version\":1.0,\"CrawlerOutput\":{\"Partitions\":{\"AddOrUpdateBehavior\":\"InheritFromTable\"},\"Tables\":{\"AddOrUpdateBehavior\":\"MergeNewColumns\"}}}"
+
+  CustomerProfileCrawler:
+    Type: AWS::Glue::Crawler
+    Properties:
+      Role: !GetAtt MyGlueCrawlerRole.Arn
+      DatabaseName: !Ref AwsForDataDatabase #Using the same Database
+      Targets:
+        S3Targets:
+          - Path: !Sub s3://${S3BucketForCustomerProfile}/revenuedb/
+      TablePrefix: awsfordata-
+      SchemaChangePolicy:
+        UpdateBehavior: "UPDATE_IN_DATABASE"
+        DeleteBehavior: "LOG"
+      Configuration: "{\"Version\":1.0,\"CrawlerOutput\":{\"Partitions\":{\"AddOrUpdateBehavior\":\"InheritFromTable\"},\"Tables\":{\"AddOrUpdateBehavior\":\"MergeNewColumns\"}}}"
+
+
+# 
+
+####################################################################################################################################
+####################################################################################################################################
+########################################################Amazon SecretsManager#######################################################
+####################################################################################################################################
+####################################################################################################################################
+  SQLServerSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub SQLServerSecret${Suffix}
+      Description: This is my rds instance secret
+      GenerateSecretString:
+        SecretStringTemplate: '{"username": "Admin"}'
+        GenerateStringKey: password
+        PasswordLength: 16
+        ExcludeCharacters: "\"@/\\.,;:\ '"
+
+  AuroraSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub AuroraSecret${Suffix}
+      Description: This is my rds instance secret
+      GenerateSecretString:
+        SecretStringTemplate: '{"username": "adminaurora"}'
+        GenerateStringKey: password
+        PasswordLength: 16
+        ExcludeCharacters: "\"@/\\.,;:\ '"
+
+  RedshiftSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub RedshiftSecret${Suffix}
+      Description: This is my rds instance secret
+      GenerateSecretString:
+        SecretStringTemplate: '{"username": "admin"}'
+        GenerateStringKey: password
+        PasswordLength: 16
+        ExcludeCharacters: "\"@/\\.,;:\ '"
+
+
+####################################################################################################################################
+####################################################################################################################################
+#############################################################Amazon VPC#############################################################
+####################################################################################################################################
+####################################################################################################################################
+  PubPrivateVPC:
+    Type: 'AWS::EC2::VPC'
+    Properties:
+      CidrBlock: 10.32.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-vpcRDSSQL-${Suffix}
+
+  PublicSubnet1:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref PubPrivateVPC
+      AvailabilityZone: !Select [0, !GetAZs ]
+      CidrBlock: 10.32.1.0/24
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-snRDSSQLPublic1-${Suffix}
+
+
+  PublicSubnet2:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref PubPrivateVPC
+      AvailabilityZone: !Select [1, !GetAZs ]
+      CidrBlock: 10.32.2.0/24
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-snRDSSQLPublic2-${Suffix}
+
+
+  PrivateSubnet1:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref PubPrivateVPC
+      AvailabilityZone: !Select [0, !GetAZs ]
+      CidrBlock: 10.32.3.0/24
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-snRDSSQLPrivate1-${Suffix}
+
+  PrivateSubnet2:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref PubPrivateVPC
+      AvailabilityZone: !Select [1, !GetAZs ]
+      CidrBlock: 10.32.4.0/24
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-snRDSSQLPrivate2-${Suffix}    
+
+  PrivateSubnet3:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref PubPrivateVPC
+      AvailabilityZone: !Select [2, !GetAZs ]
+      CidrBlock: 10.32.5.0/24
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-snRDSSQLPrivate3-${Suffix}    
+
+  InternetGateway:
+    Type: 'AWS::EC2::InternetGateway'
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-igwRDSSQL-${Suffix}"
+        - Key: Network
+          Value: Public
+
+  GatewayToInternet:
+    Type: 'AWS::EC2::VPCGatewayAttachment'
+    Properties:
+      VpcId: !Ref PubPrivateVPC
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicRouteTable:
+    Type: 'AWS::EC2::RouteTable'
+    Properties:
+      VpcId: !Ref PubPrivateVPC
+      Tags:
+        - Key: Network
+          Value: Public
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-rtblRDSSQLPublic-${Suffix}
+
+  PublicRoute:
+    Type: 'AWS::EC2::Route'
+    DependsOn: GatewayToInternet
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnet1RouteTableAssociation:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicSubnet2RouteTableAssociation:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      SubnetId: !Ref PublicSubnet2
+      RouteTableId: !Ref PublicRouteTable
+
+  NatGateway:
+    Type: "AWS::EC2::NatGateway"
+    DependsOn: NatPublicIP
+    Properties: 
+      AllocationId: !GetAtt NatPublicIP.AllocationId
+      SubnetId: !Ref PublicSubnet1
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-ngwRDSSQL-${Suffix}
+
+  NatPublicIP:
+    Type: "AWS::EC2::EIP"
+    DependsOn: PubPrivateVPC
+    Properties:
+      Domain: vpc
+
+  PrivateRouteTable:
+    Type: 'AWS::EC2::RouteTable'
+    Properties:
+      VpcId: !Ref PubPrivateVPC
+      Tags:
+        - Key: Network
+          Value: Private
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-rtblRDSSQLPrivate-${Suffix}
+    
+  PrivateRoute:
+    Type: 'AWS::EC2::Route'
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway
+
+  PrivateSubnet1RouteTableAssociation:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      SubnetId: !Ref PrivateSubnet1
+      RouteTableId: !Ref PrivateRouteTable
+
+  PrivateSubnet2RouteTableAssociation:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      SubnetId: !Ref PrivateSubnet2
+      RouteTableId: !Ref PrivateRouteTable
+
+  PrivateSubnet3RouteTableAssociation:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      SubnetId: !Ref PrivateSubnet3
+      RouteTableId: !Ref PrivateRouteTable
+
+####################################################################################################################################
+####################################################################################################################################
+###########################################################Amazon Redshift##########################################################
+####################################################################################################################################
+####################################################################################################################################
+
+  RedshiftSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref PubPrivateVPC
+
+      GroupDescription: Security group
+      Tags:
+      - Key: Name
+        Value: !Sub ${AWS::StackName}-RedshiftSecurityGroup-${Suffix}  
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: 5439
+        ToPort: 5439
+        SourceSecurityGroupId: !Ref DMSSecurityGroup
+
+  RedshiftRuleDbSecGroupClusterIngressDMS:
+    Type: 'AWS::EC2::SecurityGroupIngress'
+    Properties:
+      GroupId: !Ref RedshiftSecurityGroup 
+      FromPort: 0
+      ToPort: 65535
+      IpProtocol: tcp
+      SourceSecurityGroupId: !Ref RedshiftSecurityGroup
+
+  ClusterSubnetGroup:
+    Type: AWS::Redshift::ClusterSubnetGroup
+    Properties:
+      Description: RedshiftClusterSubnetGroup
+      SubnetIds: 
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+        - !Ref PrivateSubnet3
+
+
+  RedshiftParameterGroup:
+    Type: AWS::Redshift::ClusterParameterGroup
+    Properties:
+      Description: "ParameterGroup for AWS for Data"
+      ParameterGroupFamily: redshift-1.0
+
+  RedshiftSpectrumS3Role:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          -
+            Effect: "Allow"
+            Principal:
+              Service:
+                - "redshift.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      RoleName: !Sub RedshiftSpectrumS3${Suffix}  
+
+  IAMPolicySpectrum:
+    Type: AWS::IAM::Policy
+    Properties: 
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - 's3:Get*'
+              - 's3:GetBucketLocation'
+              - 's3:GetObject'
+              - 's3:ListMultipartUploadParts'
+              - 's3:ListBucket'
+              - 's3:ListBucketMultipartUploads'
+            Resource: 
+              - !Sub 'arn:aws:s3:::awsfordata-rawdata-s3bucket-${AWS::AccountId}/*'
+              - !Sub 'arn:aws:s3:::awsfordata-rawdata-s3bucket-${AWS::AccountId}'
+          - Effect: Allow
+            Action:
+              - 'glue:CreateDatabase'
+              - 'glue:DeleteDatabase'
+              - 'glue:GetDatabase'
+              - 'glue:GetDatabases'
+              - 'glue:UpdateDatabase'
+              - 'glue:CreateTable'
+              - 'glue:DeleteTable'
+              - 'glue:BatchDeleteTable'
+              - 'glue:UpdateTable'
+              - 'glue:GetTable'
+              - 'glue:GetTables'
+              - 'glue:BatchCreatePartition'
+              - 'glue:CreatePartition'
+              - 'glue:DeletePartition'
+              - 'glue:BatchDeletePartition'
+              - 'glue:UpdatePartition'
+              - 'glue:GetPartition'
+              - 'glue:GetPartitions'
+              - 'glue:BatchGetPartition'
+            Resource: 
+              - '*'
+      PolicyName: !Sub "RedshiftSpectrumPolicy${Suffix}"
+      Roles: 
+        - !Ref RedshiftSpectrumS3Role
+
+  RedshiftKinesisRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - "redshift.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+
+  RedshiftKinesisPolicy:
+    Type: AWS::IAM::Policy
+    Properties: 
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - 'kinesis:DescribeStreamSummary'
+              - 'kinesis:GetShardIterator'
+              - 'kinesis:GetRecords'
+              - 'kinesis:DescribeStream'
+            Resource: 
+              - !Sub 'arn:aws:kinesis:*:${AWS::AccountId}:stream/*'
+              - !Sub 'arn:aws:s3:::awsfordata-rawdata-s3bucket-${AWS::AccountId}'
+          - Effect: Allow
+            Action:
+              - 'kinesis:ListStreams'
+              - 'kinesis:ListShards'
+            Resource: 
+              - '*'
+      PolicyName: !Sub "RedshiftKinesisPolicy${Suffix}"
+      Roles: 
+        - !Ref RedshiftKinesisRole
+
+
+
+  DmsVpcRole:
+      Type: AWS::IAM::Role
+      Properties:
+        AssumeRolePolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Effect: "Allow"
+              Principal:
+                Service:
+                  - "dms.amazonaws.com"
+              Action:
+                - "sts:AssumeRole"
+        ManagedPolicyArns:
+          - arn:aws:iam::aws:policy/service-role/AmazonDMSVPCManagementRole
+        RoleName: dms-vpc-role
+
+  DmsCloudwatchLogsRole:
+      Type: AWS::IAM::Role
+      Properties:
+        AssumeRolePolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Effect: "Allow"
+              Principal:
+                Service:
+                  - "dms.amazonaws.com"
+              Action:
+                - "sts:AssumeRole"
+        ManagedPolicyArns:
+          - arn:aws:iam::aws:policy/service-role/AmazonDMSCloudWatchLogsRole
+        RoleName: dms-cloudwatch-logs-role 
+  
+  DmsAccessForEndpoint:
+      Type: AWS::IAM::Role
+      Properties:
+        AssumeRolePolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Effect: "Allow"
+              Principal:
+                Service:
+                  - "dms.amazonaws.com"
+              Action:
+                - "sts:AssumeRole"
+            - Effect: "Allow"
+              Principal:
+                Service:
+                  - "redshift.amazonaws.com"
+              Action:
+                - "sts:AssumeRole"
+        ManagedPolicyArns:
+          - arn:aws:iam::aws:policy/service-role/AmazonDMSRedshiftS3Role
+        RoleName: dms-access-for-endpoint 
+
+
+
+  RedshiftVPCEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties: 
+      SecurityGroupIds: 
+        - !Ref RedshiftSecurityGroup
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.redshift'
+      SubnetIds: 
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+        - !Ref PrivateSubnet3
+      VpcEndpointType: Interface
+      VpcId: !Ref PubPrivateVPC
+
+
+  RedshiftCluster:
+    Type: AWS::Redshift::Cluster
+    DependsOn: 
+      - RedshiftSecret
+      - PubPrivateVPC
+      - InternetGateway
+      - RedshiftSecurityGroup
+      - ClusterSubnetGroup
+      - RedshiftParameterGroup
+      - RedshiftSpectrumS3Role
+    Properties:
+      ClusterType: 'multi-node'
+      NumberOfNodes: 2
+      NodeType: ra3.4xlarge
+      DBName: 'dev'
+      IamRoles:
+        - !Sub 'arn:aws:iam::${AWS::AccountId}:role/${RedshiftSpectrumS3Role}'
+      MasterUsername: !Sub "{{resolve:secretsmanager:${RedshiftSecret}:SecretString:username}}"
+      MasterUserPassword: !Sub "{{resolve:secretsmanager:${RedshiftSecret}:SecretString:password}}"
+      PubliclyAccessible: false
+      Port: 5439
+      VpcSecurityGroupIds:
+        - !Ref RedshiftSecurityGroup
+      ClusterSubnetGroupName: !Ref ClusterSubnetGroup
+      AllowVersionUpgrade: false
+      ClusterParameterGroupName: !Ref RedshiftParameterGroup
+      Tags:
+      - Key: Name
+        Value: 'AWSforData'
+
+####################################################################################################################################
+####################################################################################################################################
+#########################################################Amazon Aurora MYSQL########################################################
+####################################################################################################################################
+####################################################################################################################################
+## Create DB subnet group
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: !Sub Subnet Group for ${AWS::StackName}
+      SubnetIds: 
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+        - !Ref PrivateSubnet3
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-dbsubnetgroup-${Suffix} 
+
+
+  PublicSecGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      VpcId: !Ref PubPrivateVPC
+      GroupDescription: allow connections from specified CIDR ranges
+      Tags:
+      - Key: Name
+        Value: !Sub ${AWS::StackName}-PublicSecurityGroup-${Suffix}      
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: 80
+        ToPort: 80
+        CidrIp: !Ref ClientPublicIPaddress
+      - IpProtocol: tcp
+        FromPort: 3389
+        ToPort: 3389
+        CidrIp: !Ref ClientPublicIPaddress
+        Description: Allows RDP access   
+
+        
+  AuroraSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      VpcId: !Ref PubPrivateVPC
+      GroupDescription: Allow connect to Aurora MySQL Cluster
+      Tags:
+      - Key: Name
+        Value: !Sub ${AWS::StackName}-AuroraSecurityGroup-${Suffix} 
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: 3306
+        ToPort: 3306
+        SourceSecurityGroupId: !Ref PublicSecGroup
+        Description: Allow connect to Aurora MySQL Cluster
+      - IpProtocol: tcp
+        FromPort: 3306
+        ToPort: 3306
+        SourceSecurityGroupId: !Ref DMSSecurityGroup
+        Description: Allow connect to Aurora MySQL Cluster from DMS
+
+  AuroraruleDbSecGroupClusterIngressSelf:
+    Type: 'AWS::EC2::SecurityGroupIngress'
+    Properties:
+      GroupId: !Ref AuroraSecurityGroup 
+      FromPort: 0
+      ToPort: 65535
+      IpProtocol: tcp
+      SourceSecurityGroupId: !Ref AuroraSecurityGroup
+
+        
+  AuroraMySQLCluster:
+    Type: AWS::RDS::DBCluster
+    DependsOn:
+      - PubPrivateVPC
+      - DBSubnetGroup
+      - PublicSecGroup
+      - AuroraSecurityGroup
+    DeletionPolicy: Delete
+    Properties:
+      Tags:
+      - Key: Name
+        Value: !Sub "AuroraMySQLCluster${AWS::StackName}${Suffix}"
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      VpcSecurityGroupIds: 
+        - !GetAtt AuroraSecurityGroup.GroupId
+      DatabaseName: awsfordata
+      Engine: aurora-mysql
+      EngineVersion: 5.7.mysql_aurora.2.07.4
+      MasterUsername: !Sub "{{resolve:secretsmanager:${AuroraSecret}::username}}"
+      MasterUserPassword: !Sub "{{resolve:secretsmanager:${AuroraSecret}::password}}"
+ 
+  AuroraMySQLInstance:
+    Type: AWS::RDS::DBInstance
+    DependsOn: 
+    - AuroraMySQLCluster
+    DeletionPolicy: Delete
+    Properties:
+      Tags:
+      - Key: Name
+        Value: !Sub "AuroraMySQLInstance${AWS::StackName}${Suffix}"
+      DBClusterIdentifier: !Ref AuroraMySQLCluster
+      DBInstanceIdentifier: !Sub "AuroraMySQLInstance${AWS::StackName}${Suffix}"
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      DBInstanceClass: db.r5.large
+      Engine: aurora-mysql
+      EngineVersion: 5.7.mysql_aurora.2.07.4
+      LicenseModel: general-public-license
+      PubliclyAccessible: false  
+
+####################################################################################################################################
+####################################################################################################################################
+#######################################################Amazon RDS - SQL Server######################################################
+####################################################################################################################################
+#################################################################################################################################### 
+
+  ## Create DB subnet group
+  SQLServerDBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: !Sub Subnet Group for ${AWS::StackName} SQL Server
+      SubnetIds: 
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+        - !Ref PrivateSubnet3
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-dbsubnetgroup-${Suffix}
+
+
+
+        
+  SQLServerSecGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      VpcId: !Ref PubPrivateVPC
+      GroupDescription: Allow connect to SQL Server
+      Tags:
+      - Key: Name
+        Value: !Sub ${AWS::StackName}-SQLServerSecurityGroup-${Suffix}
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: 1433
+        ToPort: 1433
+        SourceSecurityGroupId: !Ref PublicSecGroup
+        Description: Allows SQL Server access from app
+      - IpProtocol: tcp
+        FromPort: 1433
+        ToPort: 1433
+        SourceSecurityGroupId: !Ref DMSSecurityGroup
+
+  SQLServerRuleDbSecGroupClusterIngressSelf:
+    Type: 'AWS::EC2::SecurityGroupIngress'
+    Properties:
+      GroupId: !Ref SQLServerSecGroup 
+      FromPort: 0
+      ToPort: 65535
+      IpProtocol: tcp
+      SourceSecurityGroupId: !Ref SQLServerSecGroup
+
+
+  bastionHost:
+    Type: AWS::EC2::Instance
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      ImageId: !Ref LatestAmiId
+      InstanceType: "m5.large"
+      KeyName: !Ref WinKeyName
+      SecurityGroupIds: [!Ref PublicSecGroup]
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-bastion-host-${Suffix} 
+
+
+  TargetSQLServer:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Delete
+    Properties:
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      VPCSecurityGroups: 
+        - !GetAtt SQLServerSecGroup.GroupId
+      LicenseModel: license-included
+      Engine: sqlserver-ee
+      DBInstanceClass: db.m6i.xlarge
+      MasterUsername: !Sub "{{resolve:secretsmanager:${SQLServerSecret}::username}}"
+      MasterUserPassword: !Sub "{{resolve:secretsmanager:${SQLServerSecret}::password}}"
+      PubliclyAccessible: false
+      BackupRetentionPeriod: 0
+      DBSnapshotIdentifier: 
+        Fn::If:
+          - RestoreFromSnapshot
+          - Ref: SnapshotIdentifierSQLserver
+          - Ref: AWS::NoValue
+    
+
+####################################################################################################################################
+####################################################################################################################################
+################################################################DMS#################################################################
+####################################################################################################################################
+####################################################################################################################################
+  
+    
+  ReplicationInstanceSubnetGroup:
+    Type: AWS::DMS::ReplicationSubnetGroup
+    Properties:
+      ReplicationSubnetGroupDescription: !Sub '${AWS::StackName} DMS Subnet Group'
+      SubnetIds: 
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+        - !Ref PrivateSubnet3
+      Tags:
+          - Key: Name
+            Value: !Sub '${AWS::StackName}-dms-subnet-group-${Suffix}'
+
+  DMSSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      VpcId: !Ref PubPrivateVPC
+      GroupDescription: DMS Security Group
+      Tags:
+      - Key: Name
+        Value: !Sub ${AWS::StackName}-DMSSecurityGroup-${Suffix} 
+   
+  RepInstance:
+    Type: AWS::DMS::ReplicationInstance
+    DependsOn: 
+      - ReplicationInstanceSubnetGroup
+    Properties:
+      AllocatedStorage: 250
+      AutoMinorVersionUpgrade: true
+      EngineVersion:  3.4.7
+      MultiAZ: false
+      PubliclyAccessible: false
+      ReplicationInstanceClass: dms.c6i.xlarge
+      ReplicationSubnetGroupIdentifier: !Ref ReplicationInstanceSubnetGroup
+      VpcSecurityGroupIds: 
+      - !Ref DMSSecurityGroup
+      - !Ref AuroraSecurityGroup
+
+  S3GatewayEndpoint:
+    Type: 'AWS::EC2::VPCEndpoint'
+    Properties:
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal: '*'
+            Action:
+              - 's3:GetObject'
+              - 's3:PutObject'
+              - 's3:DeleteObject'
+              - 's3:PutObjectTagging'
+              - 's3:ListBucket'
+            Resource:
+              - 'arn:aws:s3:::*'
+            Condition:
+              StringEquals:
+                aws:sourceVpc: !Ref PubPrivateVPC
+      RouteTableIds:
+        - !Ref PublicRouteTable 
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.s3'
+      VpcId: !Ref PubPrivateVPC
+
+
+
+  SQLServerEndpointSource:
+    Type: AWS::DMS::Endpoint
+    DependsOn:
+      - TargetSQLServer
+    Properties: 
+      DatabaseName: master
+      EndpointType: source
+      EngineName:  sqlserver
+      Password: !Sub "{{resolve:secretsmanager:${SQLServerSecret}::password}}"
+      Port: 1433
+      ServerName: !GetAtt TargetSQLServer.Endpoint.Address
+      Username: !Sub "{{resolve:secretsmanager:${SQLServerSecret}::username}}"
+
+  AuroraEndpointSource:
+    Type: AWS::DMS::Endpoint
+    DependsOn:
+      - AuroraMySQLCluster
+    Properties: 
+      EndpointType: source
+      EngineName: aurora
+      Password: !Sub "{{resolve:secretsmanager:${AuroraSecret}::password}}"
+      Port: 3306
+      ServerName: !GetAtt AuroraMySQLCluster.Endpoint.Address
+      Username: !Sub "{{resolve:secretsmanager:${AuroraSecret}::username}}"
+
+  
+  AuroraEndpointTarget:
+    Type: AWS::DMS::Endpoint
+    DependsOn:
+      - AuroraMySQLCluster
+    Properties: 
+      EndpointType: target
+      EngineName: aurora
+      Password: !Sub "{{resolve:secretsmanager:${AuroraSecret}::password}}"
+      Port: 3306
+      ResourceIdentifier: AuroraTargetEndpoint
+      ServerName: !GetAtt  AuroraMySQLCluster.Endpoint.Address
+      Username: !Sub "{{resolve:secretsmanager:${AuroraSecret}::username}}"
+
+
+  RedshiftEndpointTarget:
+    Type: AWS::DMS::Endpoint
+    DependsOn:
+      - RedshiftCluster
+      - RedshiftSecret
+    Properties: 
+      DatabaseName: dev
+      EndpointType: target
+      EngineName: redshift
+      Password: !Sub "{{resolve:secretsmanager:${RedshiftSecret}::password}}"
+      Port: 5439
+      ServerName: !GetAtt RedshiftCluster.Endpoint.Address
+      Username: !Sub "{{resolve:secretsmanager:${RedshiftSecret}::username}}"
+
+  DmsReplicationTaskSQLServerToAurora:
+    Type: AWS::DMS::ReplicationTask
+    Properties:
+        MigrationType: full-load
+        ReplicationInstanceArn: !Ref RepInstance
+        ReplicationTaskIdentifier: !Sub '${AWS::StackName}-dms-replication-task-1'
+        SourceEndpointArn: !Ref SQLServerEndpointSource
+        TargetEndpointArn: !Ref AuroraEndpointTarget
+        TableMappings: "{ \"rules\": [ { \"rule-type\": \"selection\", \"rule-id\": \"1\", \"rule-name\": \"1\", \"object-locator\": { \"schema-name\": \"revenuedb\", \"table-name\": \"%\" }, \"rule-action\": \"include\" } ] }"
+
+
+  DmsReplicationTaskAuroraToRedshift:
+    Type: AWS::DMS::ReplicationTask
+    Properties:
+        MigrationType: full-load-and-cdc
+        ReplicationInstanceArn: !Ref RepInstance
+        ReplicationTaskIdentifier: !Sub '${AWS::StackName}-dms-replication-task-2'
+        SourceEndpointArn: !Ref AuroraEndpointSource
+        TargetEndpointArn: !Ref RedshiftEndpointTarget
+        TableMappings: "{ \"rules\": [ { \"rule-type\": \"selection\", \"rule-id\": \"1\", \"rule-name\": \"1\", \"object-locator\": { \"schema-name\": \"revenuedb\", \"table-name\": \"%\" }, \"rule-action\": \"include\" } ] }"        
+
+
+
+
+
+####################################################################################################################################
+####################################################################################################################################
+##############################################################Outputs###############################################################
+####################################################################################################################################
+####################################################################################################################################
+
+Outputs:
+
+  S3BucketForAgentsData:
+    Description: S3 Bucket Name
+    Value: !Ref S3BucketForAgentsData
+
+  S3BucketForCustomerProfile:
+    Description: S3 Bucket Name
+    Value: !Ref S3BucketForCustomerProfile
+
+  S3BucketForRawData:
+    Description: S3 Bucket Name
+    Value: !Ref S3BucketForRawData
+
+
+  RedshiftClusterEndpoint:
+    Value: !GetAtt RedshiftCluster.Endpoint.Address
+    Export:
+      Name: !Sub AWSforData-RedshiftClusterEndpointAddress
+
+  RedshiftClusterId:
+    Value: !Ref RedshiftCluster
+    Export:
+      Name: !Sub AWSforData-RedshiftClusterId
+
+  RedshiftClusterPort:
+    Value: !GetAtt RedshiftCluster.Endpoint.Port
+    Export:
+      Name: !Sub AWSforData-RedshiftClusterEndpointPort
+
+
+  RedshiftKinesisRole:
+    Description: Redshift Kinesis Role
+    Value: !Ref RedshiftKinesisRole
+    Export:
+      Name:
+        'Fn::Sub': 'AWSforData-RedshiftKinesisRole'
+
+  RedshiftSecret:
+    Description: Redshift Credential Secret
+    Value: !Ref RedshiftSecret
+    Export:
+      Name:
+        'Fn::Sub': 'AWSforData-RedshiftSecretARN'
+  AWSforDataVPCID:
+    Description: AWS for Data VPC
+    Value: !Ref PubPrivateVPC 
+    Export:
+      Name:
+        'Fn::Sub': 'AWSforData-VPCID'   
+  VPC:
+    Description: VPC
+    Value: !Ref PubPrivateVPC
+    Export:
+      Name:
+        'Fn::Sub': 'AWSforData-VPC'
+  

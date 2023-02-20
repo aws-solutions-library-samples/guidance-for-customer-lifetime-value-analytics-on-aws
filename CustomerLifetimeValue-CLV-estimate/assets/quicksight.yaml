@@ -1,0 +1,668 @@
+# https://devops.learnquicksight.online/quicksight-via-cloudformation.html
+# https://docs.aws.amazon.com/quicksight/latest/APIReference/API_CreateDataSet.html
+AWSTemplateFormatVersion: 2010-09-09
+Description: Cloudformation Template for Quicksight
+# Running the following command will configure Quicksight into your account: 
+Parameters:
+  1stReadMe:
+    Type: String
+    Default: README
+    Description: 'PREREQUISITES - 1) QuickSight should be setup on the aws account, 2) An user with author/admin role should be setup in QuickSight and added to group: datateam 3)SPICE capacity should be available in the region where you are creating this stack.'
+
+  Suffix:
+    Type: String
+    Description: This is a suffix if you want to add a suffix to your resources to avoid conflict
+
+  QuickSightIdentityRegion:
+    Type: String
+    MinLength: 1
+    Description: REQUIRED - QuickSight identity region (region where your users are managed; run list-users command and check the user arn if you are not sure of the identity region).
+    Default: 'us-east-1'
+
+  # QuickSightUser:
+  #   Type: String
+  #   MinLength: 1
+  #   Description: REQUIRED - User name of QuickSight author/admin from default namespace (as displayed in QuickSight admin panel). Dashboard created by this template with be shared with this user.
+  #   Default: 'Admin/syedair-Isengard'
+
+  QuickSightGroup:
+    Type: String
+    MinLength: 1
+    Description: REQUIRED - User name of QuickSight author/admin from default namespace (as displayed in QuickSight admin panel). Dashboard created by this template with be shared with this user.
+    Default: 'datateam'
+
+
+  QuicksightVPCconnection:
+    Description: VPC Connection Name that you created Amazon Quicksight
+    Type: String
+    Default: cf-vpc-connection
+
+  RedshiftSecret:
+    Description: Redshift Secret Name
+    Type: String
+
+
+Resources:
+  
+# aws quicksight create-account-subscription --edition ENTERPRISE --authentication-method IAM_AND_QUICKSIGHT --aws-account-id XXXXXXXXXXXX --account-name quicksight-enterprise-reporting --notification-email XXXXXXXXXX --region us-east-1
+####################################################################################################################################
+####################################################################################################################################
+##########################################################Amazon Quicksight#########################################################
+####################################################################################################################################
+####################################################################################################################################
+  AWSforDataDataSource:
+    Type: AWS::QuickSight::DataSource
+    # DependsOn: 
+    #   - RedshiftSecret
+    #   - RedshiftCluster
+    Properties: 
+      Type: "REDSHIFT"
+      AwsAccountId: !Ref AWS::AccountId
+      DataSourceId: !Sub "Redshift-DataSource${Suffix}"
+      Name: !Sub "Redshift-DataSource-Cloudformation$Suffix"
+      DataSourceParameters:
+        RedshiftParameters:
+          Database: "dev"
+          # ClusterId: !Ref RedshiftClusterName
+          ClusterId: !ImportValue   
+            'Fn::Sub': 'AWSforData-RedshiftClusterId'
+          Host: !ImportValue   
+            'Fn::Sub': 'AWSforData-RedshiftClusterEndpointAddress'
+          # Host: !Ref RedshiftClusterEndpoint
+          # Host: !Sub "redshift-cluster-1.${AWS::AccountId}.${AWS::Region}.redshift.amazonaws.com"
+          Port: !ImportValue   
+            'Fn::Sub': 'AWSforData-RedshiftClusterEndpointPort'
+      Credentials:
+        CredentialPair:
+          # Username: !ImportValue !Sub "{{resolve:secretsmanager:${AWSforData-RedshiftSecretARN}:SecretString:username}}"
+          # Password: !ImportValue !Sub "{{resolve:secretsmanager:${AWSforData-RedshiftSecretARN}:SecretString:password}}"
+          Username: !Sub "{{resolve:secretsmanager:${RedshiftSecret}:SecretString:username}}"
+          Password: !Sub "{{resolve:secretsmanager:${RedshiftSecret}:SecretString:password}}"
+      Permissions: 
+        - Actions:
+            - "quicksight:UpdateDataSourcePermissions"
+            - "quicksight:DescribeDataSource"
+            - "quicksight:DescribeDataSourcePermissions"
+            - "quicksight:PassDataSource"
+            - "quicksight:UpdateDataSource"
+            - "quicksight:DeleteDataSource"
+          Principal: !Sub "arn:aws:quicksight:${QuickSightIdentityRegion}:${AWS::AccountId}:group/default/${QuickSightGroup}"
+      VpcConnectionProperties: 
+        VpcConnectionArn: !Sub "arn:aws:quicksight:${AWS::Region}:${AWS::AccountId}:vpcConnection/${QuicksightVPCconnection}"
+
+
+
+  RevenuesViewDataSet:
+      Type: AWS::QuickSight::DataSet
+      DependsOn: AWSforDataDataSource
+      Properties:
+        DataSetId: !Sub "RevenuesViewDataSet${Suffix}"
+        Name: !Sub "RevenuesViewDataSet${Suffix}-cloudformation"
+        # DataSetId: !Join
+        #   - ''
+        #   - - AWSforData-DataSet
+        #     - !Ref Suffix
+        # Name: !Join
+        #   - ''
+        #   - - AWSforData-DataSet
+        #     - !Ref Suffix
+        AwsAccountId: !Ref AWS::AccountId
+        LogicalTableMap:
+          75785675-3df7-477a-a35f-7314ee227dee:
+            Alias: revenues_view
+            DataTransforms:
+            - ProjectOperation:
+                ProjectedColumns:
+                - customerid
+                - revenue
+                - description
+                - period
+                - age
+                - tenure
+                - count_trx
+                - agentid
+                - sum
+            Source:
+              PhysicalTableId: 3092def0-b5a9-4b4b-9ad8-6c501bef4e3a
+        OutputColumns:
+        - Name: customerid
+          Type: INTEGER
+        - Name: revenue
+          Type: DECIMAL
+        - Name: description
+          Type: STRING
+        - Name: period
+          Type: DATETIME
+        - Name: age
+          Type: INTEGER
+        - Name: tenure
+          Type: INTEGER
+        - Name: count_trx
+          Type: INTEGER
+        - Name: agentid
+          Type: INTEGER
+        - Name: sum
+          Type: DECIMAL
+        PhysicalTableMap:
+          3092def0-b5a9-4b4b-9ad8-6c501bef4e3a:
+            RelationalTable:
+              DataSourceArn: !GetAtt AWSforDataDataSource.Arn
+              InputColumns:
+              - Name: customerid
+                Type: INTEGER
+              - Name: revenue
+                Type: DECIMAL
+              - Name: description
+                Type: STRING
+              - Name: period
+                Type: DATETIME
+              - Name: age
+                Type: INTEGER
+              - Name: tenure
+                Type: INTEGER
+              - Name: count_trx
+                Type: INTEGER
+              - Name: agentid
+                Type: INTEGER
+              - Name: sum
+                Type: DECIMAL
+              Name: revenues_view
+              Schema: public
+        Permissions:
+            - Principal: !Sub "arn:aws:quicksight:${QuickSightIdentityRegion}:${AWS::AccountId}:group/default/${QuickSightGroup}"
+              Actions:
+                - quicksight:UpdateDataSetPermissions
+                - quicksight:DescribeDataSet
+                - quicksight:DescribeDataSetPermissions
+                - quicksight:PassDataSet
+                - quicksight:DescribeIngestion
+                - quicksight:ListIngestions
+                - quicksight:UpdateDataSet
+                - quicksight:DeleteDataSet
+                - quicksight:CreateIngestion
+                - quicksight:CancelIngestion
+        ImportMode: DIRECT_QUERY
+
+  RevenuesVsCostDataSet:
+        Type: AWS::QuickSight::DataSet
+        DependsOn: AWSforDataDataSource
+        Properties:
+          DataSetId: !Sub "RevenuesVsCostDataSet${Suffix}"
+          Name: !Sub "RevenuesVsCostDataSet${Suffix}-cloudformation"
+          AwsAccountId: !Ref AWS::AccountId
+          LogicalTableMap:
+            dacc8ac3-a657-4ffd-ad47-5a05ecc10ed7:
+              Alias: RevenueVsCost
+              DataTransforms:
+              - ProjectOperation:
+                  ProjectedColumns:
+                  - description
+                  - source
+                  - bankoffers
+                  - conversiontype
+                  - location
+                  - userid
+                  - category
+                  - purpose
+                  - age
+                  - tenure
+                  - totaladcost
+                  - averagerevenue
+              Source:
+                PhysicalTableId: 348906e0-5744-4a65-9c81-315637d6c4f1
+          OutputColumns:
+          - Name: description
+            Type: STRING
+          - Name: source
+            Type: STRING
+          - Name: bankoffers
+            Type: STRING
+          - Name: conversiontype
+            Type: STRING
+          - Name: location
+            Type: STRING
+          - Name: userid
+            Type: STRING
+          - Name: category
+            Type: STRING
+          - Name: purpose
+            Type: STRING
+          - Name: age
+            Type: INTEGER
+          - Name: tenure
+            Type: INTEGER
+          - Name: totaladcost
+            Type: DECIMAL
+          - Name: averagerevenue
+            Type: DECIMAL
+          PhysicalTableMap:
+            348906e0-5744-4a65-9c81-315637d6c4f1:
+              CustomSql:
+                Columns:
+                - Name: description
+                  Type: STRING
+                - Name: source
+                  Type: STRING
+                - Name: bankoffers
+                  Type: STRING
+                - Name: conversiontype
+                  Type: STRING
+                - Name: location
+                  Type: STRING
+                - Name: userid
+                  Type: STRING
+                - Name: category
+                  Type: STRING
+                - Name: purpose
+                  Type: STRING
+                - Name: age
+                  Type: INTEGER
+                - Name: tenure
+                  Type: INTEGER
+                - Name: totaladcost
+                  Type: DECIMAL
+                - Name: averagerevenue
+                  Type: DECIMAL
+                DataSourceArn: !GetAtt AWSforDataDataSource.Arn
+                Name: RevenueVsCost
+                SqlQuery: "SELECT rev.description, click.source, click.BankOffers, click.ConversionType,
+                  click.location, click.userID, prod.category, prod.purpose, cust.age, cust.tenure,
+                  sum(click.AdCost)/24 TotalAdCost, avg(rev.revenue) AverageRevenue  FROM
+                  \n    clickstream_v click\n    left outer join revenues_view rev on (click.userID
+                  = rev.customerid)\n    inner join product_categories prod on (prod.id =
+                  click.ProductID)\n    left outer join customer_profile cust on (cust.customerid
+                  = click.userid)\n    Group by 1,2,3,4,5, 6, 7, 8, 9, 10"
+          Permissions:
+              - Principal: !Sub "arn:aws:quicksight:${QuickSightIdentityRegion}:${AWS::AccountId}:group/default/${QuickSightGroup}"
+                Actions:
+                  - quicksight:UpdateDataSetPermissions
+                  - quicksight:DescribeDataSet
+                  - quicksight:DescribeDataSetPermissions
+                  - quicksight:PassDataSet
+                  - quicksight:DescribeIngestion
+                  - quicksight:ListIngestions
+                  - quicksight:UpdateDataSet
+                  - quicksight:DeleteDataSet
+                  - quicksight:CreateIngestion
+                  - quicksight:CancelIngestion
+          ImportMode: DIRECT_QUERY
+
+  ProductCategoriesDataSet:
+          Type: AWS::QuickSight::DataSet
+          DependsOn: AWSforDataDataSource
+          Properties:
+            DataSetId: !Sub "ProductCategoriesDataSet${Suffix}"
+            Name: !Sub "ProductCategoriesDataSet${Suffix}-cloudformation"
+            AwsAccountId: !Ref AWS::AccountId
+            PhysicalTableMap:
+                ProductCategoriesTable:
+                  CustomSql:
+                    Name: "Revenues Vs Cost Table"
+                    DataSourceArn: !GetAtt AWSforDataDataSource.Arn
+                    SqlQuery: "SELECT * from dev.public.product_categories"
+                    Columns:
+                    - Name: purpose
+                      Type: STRING
+                    - Name: category
+                      Type: STRING
+                    - Name: id
+                      Type: INTEGER
+            LogicalTableMap:
+                revenueVsCostTable:
+                  Alias: ProductCategoriesDataSet
+                  Source:
+                    PhysicalTableId: ProductCategoriesTable
+            Permissions:
+                - Principal: !Sub "arn:aws:quicksight:${QuickSightIdentityRegion}:${AWS::AccountId}:group/default/${QuickSightGroup}"
+                  Actions:
+                    - quicksight:UpdateDataSetPermissions
+                    - quicksight:DescribeDataSet
+                    - quicksight:DescribeDataSetPermissions
+                    - quicksight:PassDataSet
+                    - quicksight:DescribeIngestion
+                    - quicksight:ListIngestions
+                    - quicksight:UpdateDataSet
+                    - quicksight:DeleteDataSet
+                    - quicksight:CreateIngestion
+                    - quicksight:CancelIngestion
+            ImportMode: DIRECT_QUERY
+
+
+
+  ClickStreamDataSet:
+          Type: AWS::QuickSight::DataSet
+          DependsOn: AWSforDataDataSource
+          Properties:
+            DataSetId: !Sub "ClickStreamDataSet${Suffix}"
+            Name: !Sub "ClickStreamDataSet${Suffix}-cloudformation"
+            AwsAccountId: !Ref AWS::AccountId
+            LogicalTableMap:
+              ClickStreamDataSetLogicalTableMap:
+                Alias: Intermediate Table
+                DataTransforms:
+                - TagColumnOperation:
+                    ColumnName: location
+                    Tags:
+                    - ColumnGeographicRole: COUNTRY
+                - ProjectOperation:
+                    ProjectedColumns:
+                    - approximate_arrival_timestamp
+                    - partition_key
+                    - shard_id
+                    - sequence_number
+                    - id
+                    - clusterid
+                    - event_time
+                    - productid
+                    - adcost
+                    - source
+                    - bankoffers
+                    - conversiontype
+                    - location
+                    - timezone
+                    - userid
+                    - purpose
+                    - category
+                    - id[product_categories]
+                Source:
+                  JoinInstruction:
+                    LeftOperand: a9179145-0320-4ff7-a0a8-217a35beee6a
+                    OnClause: productid = {id[product_categories]}
+                    RightOperand: b6a55ef1-d795-4e9d-ae8e-e7e263261668
+                    Type: OUTER
+              a9179145-0320-4ff7-a0a8-217a35beee6a:
+                Alias: clickstream_v
+                DataTransforms:
+                - CastColumnTypeOperation:
+                    ColumnName: productid
+                    NewColumnType: INTEGER
+                Source:
+                  PhysicalTableId: ClickStreamDataSetPhysicalTable
+              b6a55ef1-d795-4e9d-ae8e-e7e263261668:
+                Alias: product_categories
+                DataTransforms:
+                - RenameColumnOperation:
+                    ColumnName: id
+                    NewColumnName: id[product_categories]
+                Source:
+                  DataSetArn: !GetAtt ProductCategoriesDataSet.Arn
+            OutputColumns:
+            - Name: approximate_arrival_timestamp
+              Type: DATETIME
+            - Name: partition_key
+              Type: STRING
+            - Name: shard_id
+              Type: STRING
+            - Name: sequence_number
+              Type: STRING
+            - Name: id
+              Type: STRING
+            - Name: clusterid
+              Type: STRING
+            - Name: event_time
+              Type: STRING
+            - Name: productid
+              Type: INTEGER
+            - Name: adcost
+              Type: DECIMAL
+            - Name: source
+              Type: STRING
+            - Name: bankoffers
+              Type: STRING
+            - Name: conversiontype
+              Type: STRING
+            - Name: location
+              Type: STRING
+            - Name: timezone
+              Type: STRING
+            - Name: userid
+              Type: STRING
+            - Name: purpose
+              Type: STRING
+            - Name: category
+              Type: STRING
+            - Name: id[product_categories]
+              Type: INTEGER
+            PhysicalTableMap:
+              ClickStreamDataSetPhysicalTable:
+                RelationalTable:
+                  DataSourceArn: !GetAtt AWSforDataDataSource.Arn
+                  InputColumns:
+                  - Name: approximate_arrival_timestamp
+                    Type: DATETIME
+                  - Name: partition_key
+                    Type: STRING
+                  - Name: shard_id
+                    Type: STRING
+                  - Name: sequence_number
+                    Type: STRING
+                  - Name: id
+                    Type: STRING
+                  - Name: clusterid
+                    Type: STRING
+                  - Name: event_time
+                    Type: STRING
+                  - Name: productid
+                    Type: DECIMAL
+                  - Name: adcost
+                    Type: DECIMAL
+                  - Name: source
+                    Type: STRING
+                  - Name: bankoffers
+                    Type: STRING
+                  - Name: conversiontype
+                    Type: STRING
+                  - Name: location
+                    Type: STRING
+                  - Name: timezone
+                    Type: STRING
+                  - Name: userid
+                    Type: STRING
+                  Name: clickstream_v
+            Permissions:
+                - Principal: !Sub "arn:aws:quicksight:${QuickSightIdentityRegion}:${AWS::AccountId}:group/default/${QuickSightGroup}"
+                  Actions:
+                    - quicksight:UpdateDataSetPermissions
+                    - quicksight:DescribeDataSet
+                    - quicksight:DescribeDataSetPermissions
+                    - quicksight:PassDataSet
+                    - quicksight:DescribeIngestion
+                    - quicksight:ListIngestions
+                    - quicksight:UpdateDataSet
+                    - quicksight:DeleteDataSet
+                    - quicksight:CreateIngestion
+                    - quicksight:CancelIngestion
+            ImportMode: DIRECT_QUERY
+
+  BankProductRevenueDataSet:
+          Type: AWS::QuickSight::DataSet
+          DependsOn: AWSforDataDataSource
+          Properties:
+            DataSetId: !Sub "BankProductRevenueDataSet${Suffix}"
+            Name: !Sub "BankProductRevenueDataSet${Suffix}-cloudformation"
+            AwsAccountId: !Ref AWS::AccountId
+            LogicalTableMap:
+              fdeef7d9-49e7-4924-b731-b1fddb91da60:
+                Alias: bank_product_revenue
+                DataTransforms:
+                - ProjectOperation:
+                    ProjectedColumns:
+                    - account_id
+                    - product_id
+                    - fulldate
+                    - category
+                    - amount
+                    - interest_rate
+                    - interest
+                Source:
+                  PhysicalTableId: c5b62544-0036-467f-ba90-68ff2ffdb285
+            # Name: bank_product_revenue
+            OutputColumns:
+            - Name: account_id
+              Type: STRING
+            - Name: product_id
+              Type: INTEGER
+            - Name: fulldate
+              Type: DATETIME
+            - Name: category
+              Type: STRING
+            - Name: amount
+              Type: STRING
+            - Name: interest_rate
+              Type: DECIMAL
+            - Name: interest
+              Type: DECIMAL
+            PhysicalTableMap:
+              c5b62544-0036-467f-ba90-68ff2ffdb285:
+                RelationalTable:
+                  DataSourceArn: !GetAtt AWSforDataDataSource.Arn
+                  InputColumns:
+                  - Name: account_id
+                    Type: STRING
+                  - Name: product_id
+                    Type: INTEGER
+                  - Name: fulldate
+                    Type: DATETIME
+                  - Name: category
+                    Type: STRING
+                  - Name: amount
+                    Type: STRING
+                  - Name: interest_rate
+                    Type: DECIMAL
+                  - Name: interest
+                    Type: DECIMAL
+                  Name: bank_product_revenue
+                  Schema: public
+            Permissions:
+                - Principal: !Sub "arn:aws:quicksight:${QuickSightIdentityRegion}:${AWS::AccountId}:group/default/${QuickSightGroup}"
+                  Actions:
+                    - quicksight:UpdateDataSetPermissions
+                    - quicksight:DescribeDataSet
+                    - quicksight:DescribeDataSetPermissions
+                    - quicksight:PassDataSet
+                    - quicksight:DescribeIngestion
+                    - quicksight:ListIngestions
+                    - quicksight:UpdateDataSet
+                    - quicksight:DeleteDataSet
+                    - quicksight:CreateIngestion
+                    - quicksight:CancelIngestion
+            ImportMode: DIRECT_QUERY
+
+  CustomerLifetimeValueDataSet:
+          Type: AWS::QuickSight::DataSet
+          DependsOn: AWSforDataDataSource
+          Properties:
+            DataSetId: !Sub "CustomerLifetimeValueDataSet${Suffix}"
+            Name: !Sub "CustomerLifetimeValueDataSet${Suffix}-cloudformation"
+            AwsAccountId: !Ref AWS::AccountId
+            LogicalTableMap:
+              1d166e1f-097f-4567-bb1a-abad82899c7f:
+                Alias: customer_lifetime_value
+                Source:
+                  PhysicalTableId: b9a762f4-0948-4f8e-9c61-c0d9370aafcd
+            OutputColumns:
+            - Name: customerid
+              Type: INTEGER
+            - Name: stockcode
+              Type: STRING
+            - Name: period
+              Type: DATETIME
+            - Name: product
+              Type: STRING
+            - Name: clv_score
+              Type: STRING
+            PhysicalTableMap:
+              b9a762f4-0948-4f8e-9c61-c0d9370aafcd:
+                RelationalTable:
+                  DataSourceArn: !GetAtt AWSforDataDataSource.Arn
+                  InputColumns:
+                  - Name: customerid
+                    Type: INTEGER
+                  - Name: stockcode
+                    Type: STRING
+                  - Name: period
+                    Type: DATETIME
+                  - Name: product
+                    Type: STRING
+                  - Name: clv_score
+                    Type: STRING
+                  Name: customer_lifetime_value
+                  Schema: public
+            Permissions:
+                - Principal: !Sub "arn:aws:quicksight:${QuickSightIdentityRegion}:${AWS::AccountId}:group/default/${QuickSightGroup}"
+                  Actions:
+                    - quicksight:UpdateDataSetPermissions
+                    - quicksight:DescribeDataSet
+                    - quicksight:DescribeDataSetPermissions
+                    - quicksight:PassDataSet
+                    - quicksight:DescribeIngestion
+                    - quicksight:ListIngestions
+                    - quicksight:UpdateDataSet
+                    - quicksight:DeleteDataSet
+                    - quicksight:CreateIngestion
+                    - quicksight:CancelIngestion
+            ImportMode: DIRECT_QUERY
+  # ClickStreamDataSet:
+  #         Type: AWS::QuickSight::DataSet
+  #         DependsOn: AWSforDataDataSource
+  #         Properties:
+  #           DataSetId: !Sub "ClickStreamDataSet${Suffix}"
+  #           Name: !Sub "ClickStreamDataSet${Suffix}-cloudformation"
+  #           AwsAccountId: !Ref AWS::AccountId
+  #           PhysicalTableMap:
+  #               ProductCategoriesTable:
+  #                 CustomSql:
+  #                   Name: "ProductCategories Dataset"
+  #                   DataSourceArn: !GetAtt AWSforDataDataSource.Arn
+  #                   SqlQuery: "SELECT * from dev.public.product_categories"
+  #                   Columns:
+  #                   - Name: purpose
+  #                     Type: STRING
+  #                   - Name: category
+  #                     Type: STRING
+  #                   - Name: id
+  #                     Type: INTEGER
+  #               ClickStreamTable:
+  #                 CustomSql:
+  #                   Name: "Clickstream Dataset"
+  #                   DataSourceArn: !GetAtt AWSforDataDataSource.Arn
+  #                   SqlQuery: "SELECT * from dev.public.clickstream_v"
+  #                   Columns:
+  #                   - Name: purpose
+  #                     Type: STRING
+  #                   - Name: category
+  #                     Type: STRING
+  #                   - Name: id
+  #                     Type: INTEGER
+  #           LogicalTableMap:
+  #               revenueVsCostTable:
+  #                 Alias: ClickStreamDataSet
+  #                 Source:
+  #                   PhysicalTableId: ClickStreamDataSet
+  #           Permissions:
+  #               - Principal: !Sub "arn:aws:quicksight:${QuickSightIdentityRegion}:${AWS::AccountId}:group/default/${QuickSightGroup}"
+  #                 Actions:
+  #                   - quicksight:UpdateDataSetPermissions
+  #                   - quicksight:DescribeDataSet
+  #                   - quicksight:DescribeDataSetPermissions
+  #                   - quicksight:PassDataSet
+  #                   - quicksight:DescribeIngestion
+  #                   - quicksight:ListIngestions
+  #                   - quicksight:UpdateDataSet
+  #                   - quicksight:DeleteDataSet
+  #                   - quicksight:CreateIngestion
+  #                   - quicksight:CancelIngestion
+  #           ImportMode: DIRECT_QUERY
+# To Create Analysis, follow the following steps:
+# > aws quicksight describe-analysis-definition --aws-account-id 599205645134 --analysis-id dea2679c-ed40-408e-9f67-fca208c2498d > source_analysis.json
+# > aws quicksight create-analysis --generate-cli-skeleton > create-analysis.json
+# Once you merge you source with the seketon into create-analysis.json file, by copying Definitions and updating fields, run the following:
+# > aws quicksight create-analysis --cli-input-json file://create-analysis.json
+# The same Definition extraced from source_analysis.json can be used to create Dashbaord:
+# Generate Skeleton
+# > aws quicksight create-dashboard --generate-cli-skeleton > create-dashboard.json
+# After merging create dashboard:
+# > aws quicksight create-dashboard --cli-input-json file://create-dashboard.json
+#
+# Update the following while merging:
+# AwsAccountId, AnalysisId, Name, Principal, DataSetArn, 
