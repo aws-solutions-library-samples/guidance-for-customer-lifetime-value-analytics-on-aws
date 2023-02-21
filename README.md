@@ -24,7 +24,7 @@ In order to do an incremental load and also CDC (Change Data Capture), we are go
 
 Finally, for Business Intelligence (BI) and visualizations, we are using Amazon QuickSight, helping you gain value from your data.
 
-[Placeholder for the Architecutre diagram]
+![Architecture Diagram](https://user-images.githubusercontent.com/20495779/220314364-cff7fec7-e23f-4ea6-9996-a6a48d12e855.png)
 
 
 ## Implementation
