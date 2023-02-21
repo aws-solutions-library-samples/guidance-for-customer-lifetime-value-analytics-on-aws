@@ -60,14 +60,6 @@ Under the assets you will find two (2) CloudFormation templates. Let us give som
     [Amazon Kinesis Data Generator](https://awslabs.github.io/amazon-kinesis-data-generator/web/help.htm)
     [Create a cognito user with CloudFormation](https://console.aws.amazon.com/cloudformation/home?region=us-west-2#/stacks/new?stackName=Kinesis-Data-Generator-Cognito-User&templateURL=https://aws-kdg-tools.s3.us-west-2.amazonaws.com/cognito-setup.json)
 
-### Step 1:
-
-### Step 2:
-
-### Step 3:
-
-## Clean-up:
-
 ## Security
 
 See [CONTRIBUTING](CONTRIBUTING.md#security-issue-notifications) for more information.
