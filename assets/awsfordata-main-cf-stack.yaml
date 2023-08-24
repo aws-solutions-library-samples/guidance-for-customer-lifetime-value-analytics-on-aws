@@ -62,6 +62,8 @@ Resources:
     Type: 'AWS::S3::Bucket'
     Properties:
       AccessControl: BucketOwnerFullControl
+      VersioningConfiguration:
+        Status: Enabled
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
         BlockPublicPolicy: true
@@ -73,12 +75,16 @@ Resources:
     Type: 'AWS::S3::Bucket'
     DeletionPolicy: Delete
     Properties:
+      VersioningConfiguration:
+        Status: Enabled
       BucketName: !Sub "agentsdata-${AWS::AccountId}-awsfordata${Suffix}"
 
   S3BucketForCustomerProfile:
     Type: 'AWS::S3::Bucket'
     DeletionPolicy: Delete
     Properties:
+      VersioningConfiguration:
+        Status: Enabled
       BucketName: !Sub "customerprofile-${AWS::AccountId}-awsfordata${Suffix}"
 
 
